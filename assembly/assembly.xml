@@ -1,6 +1,6 @@
 <assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 http://maven.apache.org/xsd/assembly-2.2.0.xsd">
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 http://maven.apache.org/xsd/assembly-2.2.0.xsd">
     <id>addon</id>
     <formats><format>zip</format></formats>
     <includeBaseDirectory>false</includeBaseDirectory>
@@ -12,9 +12,15 @@
                 <include>LICENSE*</include>
                 <include>README.md</include>
                 <include>assembly/**</include>
-                <include>src/**</include>
                 <include>pom.xml</include>
+                <include>src/main/java/**</include>
+                <include>src/main/resources/**</include>
             </includes>
+            <!-- Exclude all generated Vaadin files -->
+            <excludes>
+                <exclude>src/main/frontend/**</exclude>
+                <exclude>src/main/bundles/**</exclude>
+            </excludes>
         </fileSet>
     </fileSets>
     <files>

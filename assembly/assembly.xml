@@ -7,7 +7,7 @@
     <fileSets>
         <fileSet>
             <directory>${project.basedir}</directory>
-            <outputDirectory></outputDirectory>
+            <outputDirectory>.</outputDirectory>
             <includes>
                 <include>LICENSE*</include>
                 <include>README.md</include>
@@ -26,7 +26,7 @@
     <files>
         <file>
             <source>${project.build.directory}/${project.build.finalName}.jar</source>
-            <outputDirectory></outputDirectory>
+            <outputDirectory>.</outputDirectory>
         </file>
     </files>
 </assembly>

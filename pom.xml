@@ -65,7 +65,8 @@
         <dependency>
             <groupId>com.vaadin</groupId>
             <artifactId>vaadin-core</artifactId>
-            <scope>provided</scope>
+            <!-- optional: not passed on to consumers, but on the demo's webapp classpath -->
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>jakarta.servlet</groupId>
@@ -77,6 +78,13 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.10.1</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Logging for the demo (mvn jetty:run) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.16</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -119,13 +127,18 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>org.eclipse.jetty</groupId>
-                <artifactId>jetty-maven-plugin</artifactId>
-                <version>11.0.24</version>
+                <!-- Jetty 12 / EE10 = Servlet 6, required by Vaadin 24 -->
+                <groupId>org.eclipse.jetty.ee10</groupId>
+                <artifactId>jetty-ee10-maven-plugin</artifactId>
+                <version>12.0.15</version>
                 <configuration>
                     <scan>0</scan>
                     <!-- Demo view (TestView) lives in src/test, keep it out of the add-on jar -->
                     <useTestScope>true</useTestScope>
+                    <!-- The add-on is packaged as a jar; let jetty:run serve it anyway -->
+                    <supportedPackagings>
+                        <supportedPackaging>jar</supportedPackaging>
+                    </supportedPackagings>
                 </configuration>
             </plugin>
             <plugin>

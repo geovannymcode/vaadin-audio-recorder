@@ -23,6 +23,7 @@ public class RecordingFinishedEvent extends ComponentEvent<AudioRecorder> {
     private final int durationSeconds;
     private final long sizeBytes;
     private byte[] cachedAudioBytes;
+    private final double reportedSizeBytes;
 
     public RecordingFinishedEvent(
             AudioRecorder source,
@@ -36,6 +37,7 @@ public class RecordingFinishedEvent extends ComponentEvent<AudioRecorder> {
         this.mimeType = mimeType;
         this.durationSeconds = durationSeconds;
         this.sizeBytes = (long) sizeBytes;
+        this.reportedSizeBytes = sizeBytes;
     }
 
     /**
@@ -52,11 +54,24 @@ public class RecordingFinishedEvent extends ComponentEvent<AudioRecorder> {
      */
     public byte[] getAudioBytes() {
         if (cachedAudioBytes == null) {
-            if (sizeBytes > DEFAULT_MAX_SIZE_BYTES) {
-                throw new IllegalStateException(
-                        "Audio payload too large: %d bytes (max %d)".formatted(sizeBytes, DEFAULT_MAX_SIZE_BYTES));
+            // The client controls both the encoded content and all metadata.
+            long maxEncodedLength = 4 * ((DEFAULT_MAX_SIZE_BYTES + 2) / 3);
+            if (base64 == null || base64.length() > maxEncodedLength
+                    || !Double.isFinite(reportedSizeBytes) || reportedSizeBytes < 0
+                    || reportedSizeBytes != sizeBytes || sizeBytes > DEFAULT_MAX_SIZE_BYTES
+                    || durationSeconds < 0) {
+                throw new IllegalStateException("Invalid or oversized audio payload (max 50 MiB)");
             }
-            cachedAudioBytes = Base64.getDecoder().decode(base64);
+            byte[] decoded;
+            try {
+                decoded = Base64.getDecoder().decode(base64);
+            } catch (IllegalArgumentException ex) {
+                throw new IllegalStateException("Invalid Base64 audio payload", ex);
+            }
+            if (decoded.length > DEFAULT_MAX_SIZE_BYTES || decoded.length != sizeBytes) {
+                throw new IllegalStateException("Audio payload size does not match actual content");
+            }
+            cachedAudioBytes = decoded;
         }
         return cachedAudioBytes;
     }

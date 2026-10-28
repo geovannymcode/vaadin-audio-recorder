@@ -11,15 +11,20 @@
             <includes>
                 <include>LICENSE*</include>
                 <include>README.md</include>
+                <include>.gitignore</include>
                 <include>assembly/**</include>
                 <include>pom.xml</include>
                 <include>src/main/java/**</include>
                 <include>src/main/resources/**</include>
+                <include>src/demo/**</include>
+                <include>src/test/**</include>
             </includes>
             <!-- Exclude all generated Vaadin files -->
             <excludes>
                 <exclude>src/main/frontend/**</exclude>
                 <exclude>src/main/bundles/**</exclude>
+                <exclude>src/demo/frontend/generated/**</exclude>
+                <exclude>src/demo/bundles/**</exclude>
             </excludes>
         </fileSet>
     </fileSets>

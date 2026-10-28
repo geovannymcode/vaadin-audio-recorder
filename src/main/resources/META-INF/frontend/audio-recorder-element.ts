@@ -40,11 +40,19 @@ export class AudioRecorderElement extends LitElement {
   private _ctx:       AudioContext          | null = null;
   private _analyser:  AnalyserNode         | null = null;
   private _source:    MediaStreamAudioSourceNode | null = null;
-  private _freqData:  Uint8Array           | null = null;
+  private _freqData:  Uint8Array<ArrayBuffer>           | null = null;
   private _chunks:    Blob[]               = [];
   private _rafId     = 0;
   private _timerId   = 0;
   private _lastBlob: Blob | null = null;
+  @state() private _starting = false;
+  @state() private _processing = false;
+  private _generation = 0;
+  private _recordedBytes = 0;
+  private _discardRecording = false;
+  private readonly _maxBytes = 50 * 1024 * 1024;
+  private _playback: HTMLAudioElement | null = null;
+  private _playbackUrl: string | null = null;
 
   // ─── Styles ───────────────────────────────────────────────────────
 
@@ -110,7 +118,7 @@ export class AudioRecorderElement extends LitElement {
         ${this.showControls ? html`
           <div class="ar-bar">
             <button class="ar-rec ${this._recording ? 'on' : ''}"
-              @click=${this._start} ?disabled=${this._recording}>● REC</button>
+              @click=${this._start} ?disabled=${this._recording || this._starting || this._processing}>● REC</button>
 
             <button class="ar-pause" @click=${this._togglePause}
               ?disabled=${!this._recording}>
@@ -126,7 +134,7 @@ export class AudioRecorderElement extends LitElement {
               ?disabled=${!this._hasBlob || this._recording}>▶ Play</button>
 
             <button class="ar-upload" @click=${this._triggerUpload}
-              ?disabled=${this._recording}>⬆ Upload</button>
+              ?disabled=${this._recording || this._starting || this._processing}>⬆ Upload</button>
             <input id="fileInput" type="file" accept="audio/*"
               @change=${this._handleUpload} style="display:none">
           </div>
@@ -148,44 +156,78 @@ export class AudioRecorderElement extends LitElement {
   // ─── Recording lifecycle ──────────────────────────────────────────
 
   private async _start() {
+    if (this._recording || this._starting || this._processing) return;
+    this._starting = true;
+    const generation = this._generation;
     try {
-      this._stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      this._fire("recording-error", { message: "Microphone access denied or unavailable" });
-      return;
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        throw new Error("Audio recording requires a supported browser and HTTPS or localhost");
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!this.isConnected || generation !== this._generation) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      this._stopPlayback();
+      this._stream = stream;
+      this._ctx = new AudioContext();
+      await this._ctx.resume();
+      if (!this.isConnected || generation !== this._generation) return;
+      this._analyser = this._ctx.createAnalyser();
+      this._analyser.fftSize = this.fftSize;
+      this._freqData = new Uint8Array(this._analyser.frequencyBinCount);
+      this._source = this._ctx.createMediaStreamSource(stream);
+      this._source.connect(this._analyser);
+
+      const opts: MediaRecorderOptions = {};
+      if (MediaRecorder.isTypeSupported(this.mimeType)) opts.mimeType = this.mimeType;
+      this._recorder = new MediaRecorder(stream, opts);
+      this._chunks = [];
+      this._recordedBytes = 0;
+      this._discardRecording = false;
+      this._recorder.ondataavailable = (ev) => {
+        this._recordedBytes += ev.data.size;
+        if (this._recordedBytes > this._maxBytes) {
+          if (!this._discardRecording) {
+            this._discardRecording = true;
+            this._chunks = [];
+            this._fire("recording-error", { message: "Audio exceeds the 50 MiB limit" });
+            this._stop();
+          }
+        } else if (!this._discardRecording && ev.data.size > 0) {
+          this._chunks.push(ev.data);
+        }
+      };
+      this._recorder.onstop = () => { void this._encode(); };
+      this._recorder.onerror = () => {
+        this._fire("recording-error", { message: "Audio recording failed" });
+        this._stop();
+      };
+      this._recorder.start(250);
+      this._recording = true;
+      this._paused = false;
+      this._elapsed = 0;
+      this._hasBlob = false;
+      this._tick();
+      this._draw();
+      this._fire("recording-started", {});
+    } catch (error) {
+      if (this._recorder && this._recorder.state !== "inactive") {
+        this._recorder.onstop = null;
+        this._recorder.stop();
+      }
+      this._recording = false;
+      this._stopTick();
+      cancelAnimationFrame(this._rafId);
+      this._teardown();
+      this._fire("recording-error", { message: error instanceof Error ? error.message : "Microphone access denied or unavailable" });
+    } finally {
+      this._starting = false;
     }
-
-    // Web Audio analyser (same pattern as Angular bookstore)
-    this._ctx      = new AudioContext();
-    this._analyser = this._ctx.createAnalyser();
-    this._analyser.fftSize = this.fftSize;
-    this._freqData = new Uint8Array(this._analyser.frequencyBinCount);
-    this._source   = this._ctx.createMediaStreamSource(this._stream);
-    this._source.connect(this._analyser);
-
-    // MediaRecorder
-    const opts: MediaRecorderOptions = {};
-    if (MediaRecorder.isTypeSupported(this.mimeType)) opts.mimeType = this.mimeType;
-    this._recorder = new MediaRecorder(this._stream, opts);
-    this._chunks   = [];
-
-    this._recorder.ondataavailable = (ev) => {
-      if (ev.data.size > 0) this._chunks.push(ev.data);
-    };
-    this._recorder.onstop = () => this._encode();
-    this._recorder.start(250);
-
-    this._recording = true;
-    this._paused    = false;
-    this._elapsed   = 0;
-    this._hasBlob   = false;
-    this._tick();
-    this._draw();
-    this._fire("recording-started", {});
   }
 
   private _togglePause() {
-    if (!this._recorder) return;
+    if (!this._recorder || !this._recording) return;
     if (this._paused) {
       this._recorder.resume();
       this._paused = false;
@@ -202,6 +244,8 @@ export class AudioRecorderElement extends LitElement {
   }
 
   private _stop() {
+    if (!this._recording) return;
+    this._processing = true;
     if (this._recorder?.state !== "inactive") this._recorder?.stop();
     this._teardown();
     this._recording = false;
@@ -214,83 +258,123 @@ export class AudioRecorderElement extends LitElement {
 
   /** Convert chunks → Blob → Base64 and fire the main event. */
   private async _encode() {
-    const mime = this._recorder?.mimeType || this.mimeType;
-    const blob = new Blob(this._chunks, { type: mime });
-    this._lastBlob = blob;
-    this._hasBlob  = true;
+    const generation = this._generation;
+    try {
+      if (this._discardRecording) return;
+      const mime = this._recorder?.mimeType || this.mimeType;
+      const blob = new Blob(this._chunks, { type: mime });
+      const duration = this._elapsed;
+      this._chunks = [];
+      const base64 = await this._toBase64(blob);
+      if (!this.isConnected || generation !== this._generation) return;
+      this._lastBlob = blob;
+      this._hasBlob = true;
+      this._fire("recording-finished", {
+        base64, mimeType: mime, durationSeconds: duration, sizeBytes: blob.size,
+      });
+    } catch (error) {
+      this._fire("recording-error", { message: error instanceof Error ? error.message : "Audio encoding failed" });
+    } finally {
+      this._processing = false;
+    }
+  }
 
-    const buf   = await blob.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    const b64 = btoa(bin);
-
-    this._fire("recording-finished", {
-      base64:          b64,
-      mimeType:        mime,
-      durationSeconds: this._elapsed,
-      sizeBytes:       blob.size,
+  private _toBase64(blob: Blob): Promise<string> {
+    if (blob.size > this._maxBytes) return Promise.reject(new Error("Audio exceeds the 50 MiB limit"));
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",", 2)[1]);
+      reader.onerror = () => reject(new Error("Cannot read audio data"));
+      reader.onabort = () => reject(new Error("Audio read cancelled"));
+      reader.readAsDataURL(blob);
     });
   }
 
-  private _play() {
+  private _stopPlayback() {
+    if (this._playback) {
+      this._playback.pause();
+      this._playback.removeAttribute("src");
+      this._playback.load();
+      this._playback = null;
+    }
+    if (this._playbackUrl) URL.revokeObjectURL(this._playbackUrl);
+    this._playbackUrl = null;
+  }
+
+  private async _play() {
     if (!this._lastBlob) return;
-    const url = URL.createObjectURL(this._lastBlob);
-    const a   = new Audio(url);
-    a.onended = () => URL.revokeObjectURL(url);
-    a.play();
-    this._fire("playback-started", {});
+    this._stopPlayback();
+    this._playbackUrl = URL.createObjectURL(this._lastBlob);
+    const audio = new Audio(this._playbackUrl);
+    this._playback = audio;
+    audio.onended = () => this._stopPlayback();
+    audio.onerror = () => {
+      this._stopPlayback();
+      this._fire("recording-error", { message: "Audio playback failed" });
+    };
+    try {
+      await audio.play();
+      this._fire("playback-started", {});
+    } catch {
+      this._stopPlayback();
+      this._fire("recording-error", { message: "Audio playback unavailable or blocked" });
+    }
   }
 
   // ─── File upload ───────────────────────────────────────────────
 
   private _triggerUpload() {
-    const input = this.shadowRoot?.getElementById("fileInput") as HTMLInputElement | null;
-    if (input) input.click();
+    (this.shadowRoot?.getElementById("fileInput") as HTMLInputElement | null)?.click();
+  }
+
+  private _duration(file: File): Promise<number> {
+    return new Promise(resolve => {
+      const audio = new Audio();
+      const url = URL.createObjectURL(file);
+      const finish = () => {
+        clearTimeout(timer);
+        const seconds = Number.isFinite(audio.duration) ? Math.round(audio.duration) : 0;
+        audio.onloadedmetadata = null;
+        audio.onerror = null;
+        audio.removeAttribute("src");
+        audio.load();
+        URL.revokeObjectURL(url);
+        resolve(Math.max(0, seconds));
+      };
+      const timer = window.setTimeout(finish, 5000);
+      audio.onloadedmetadata = finish;
+      audio.onerror = finish;
+      audio.preload = "metadata";
+      audio.src = url;
+    });
   }
 
   private async _handleUpload(e: Event) {
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
-    if (!file) return;
-
-    this._lastBlob = file;
-    this._hasBlob  = true;
-
-    const mime = file.type || "audio/webm";
-    const buf  = await file.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    const b64 = btoa(bin);
-
-    // Estimate duration from file (approximate: use audio element)
-    const url = URL.createObjectURL(file);
-    const audio = new Audio(url);
-    audio.addEventListener("loadedmetadata", () => {
-      const dur = Math.round(audio.duration) || 0;
-      URL.revokeObjectURL(url);
-
-      this._fire("recording-finished", {
-        base64:          b64,
-        mimeType:        mime,
-        durationSeconds: dur,
-        sizeBytes:       file.size,
-      });
-    });
-    // Fallback if metadata doesn't load
-    audio.addEventListener("error", () => {
-      URL.revokeObjectURL(url);
-      this._fire("recording-finished", {
-        base64:          b64,
-        mimeType:        mime,
-        durationSeconds: 0,
-        sizeBytes:       file.size,
-      });
-    });
-
-    // Reset input so same file can be uploaded again
     input.value = "";
+    if (!file || this._recording || this._starting || this._processing) return;
+    this._processing = true;
+    const generation = this._generation;
+    try {
+      const allowed = ["audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav", "audio/aac", "audio/flac"];
+      if (!allowed.includes(file.type.split(";", 1)[0].trim().toLowerCase())) {
+        throw new Error("Unsupported or unknown audio MIME type");
+      }
+      const base64 = await this._toBase64(file);
+      const duration = await this._duration(file);
+      if (!this.isConnected || generation !== this._generation) return;
+      this._stopPlayback();
+      this._lastBlob = file;
+      this._hasBlob = true;
+      this._fire("recording-finished", {
+        base64, mimeType: file.type, durationSeconds: duration, sizeBytes: file.size,
+      });
+    } catch (error) {
+      this._fire("recording-error", { message: error instanceof Error ? error.message : "Audio upload failed" });
+    } finally {
+      this._processing = false;
+    }
   }
 
   // ─── Canvas visualisation ─────────────────────────────────────────
@@ -382,13 +466,30 @@ export class AudioRecorderElement extends LitElement {
 
   private _teardown() {
     this._source?.disconnect();   this._source  = null;
-    this._ctx?.close();           this._ctx     = null;
+    if (this._ctx && this._ctx.state !== "closed") void this._ctx.close().catch(() => {});
+    this._ctx = null;
+    this._analyser = null;
+    this._freqData = null;
     this._stream?.getTracks().forEach(t => t.stop());
     this._stream = null;
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this._generation++;
+    if (this._recorder) {
+      this._recorder.onstop = null;
+      this._recorder.ondataavailable = null;
+      this._recorder.onerror = null;
+      if (this._recorder.state !== "inactive") this._recorder.stop();
+    }
+    this._recorder = null;
+    this._recording = false;
+    this._paused = false;
+    this._chunks = [];
+    this._lastBlob = null;
+    this._hasBlob = false;
+    this._stopPlayback();
     this._teardown();
     this._stopTick();
     cancelAnimationFrame(this._rafId);

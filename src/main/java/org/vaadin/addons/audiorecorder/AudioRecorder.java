@@ -9,6 +9,7 @@ import com.vaadin.flow.component.dependency.JsModule;
 import com.vaadin.flow.shared.Registration;
 
 import java.util.Set;
+import java.util.Locale;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -63,8 +64,7 @@ public class AudioRecorder extends Component implements HasSize, HasStyle {
 
     private static final Set<String> ALLOWED_MIME_TYPES = Set.of(
             "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg",
-            "audio/wav", "audio/x-wav", "audio/aac", "audio/flac",
-            "audio/webm;codecs=opus", "audio/ogg;codecs=opus"
+            "audio/wav", "audio/x-wav", "audio/aac", "audio/flac"
     );
 
     private AudioHandler audioHandler;
@@ -100,14 +100,13 @@ public class AudioRecorder extends Component implements HasSize, HasStyle {
                 return;
             }
 
-            AudioData data = new AudioData(
-                    event.getAudioBytes(),
-                    mime,
-                    event.getDurationSeconds(),
-                    event.getSizeBytes()
-            );
-
-            executeHandler(data);
+            try {
+                AudioData data = new AudioData(event.getAudioBytes(), mime,
+                        event.getDurationSeconds(), event.getSizeBytes());
+                executeHandler(data);
+            } catch (IllegalStateException ex) {
+                fireHandlerError(ex.getMessage());
+            }
         });
     }
 
@@ -172,7 +171,7 @@ public class AudioRecorder extends Component implements HasSize, HasStyle {
      */
     private static boolean isAllowedMimeType(String mimeType) {
         if (mimeType == null || mimeType.isBlank()) return false;
-        return ALLOWED_MIME_TYPES.contains(mimeType.trim().toLowerCase());
+        return ALLOWED_MIME_TYPES.contains(mimeType.split(";", 2)[0].trim().toLowerCase(Locale.ROOT));
     }
 
     /**
@@ -221,6 +220,7 @@ public class AudioRecorder extends Component implements HasSize, HasStyle {
     }
 
     public void setCanvasSize(int width, int height) {
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Canvas dimensions must be positive");
         getElement().setProperty("canvasWidth", width);
         getElement().setProperty("canvasHeight", height);
     }
@@ -241,6 +241,7 @@ public class AudioRecorder extends Component implements HasSize, HasStyle {
      * Auto-stop after {@code seconds}. Use 0 for unlimited.
      */
     public void setMaxDuration(int seconds) {
+        if (seconds < 0) throw new IllegalArgumentException("Maximum duration must be non-negative");
         getElement().setProperty("maxDuration", seconds);
     }
 

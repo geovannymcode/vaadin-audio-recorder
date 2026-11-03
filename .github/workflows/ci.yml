@@ -1,0 +1,91 @@
+name: Java 25 migration CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify library and Directory package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LC_ALL: C
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25 and Maven cache
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: pom.xml
+
+      - name: Build and test library
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Verify the seven existing automated tests ran successfully
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          report = ET.parse(
+              'target/surefire-reports/TEST-org.vaadin.addons.audiorecorder.AudioRecorderTest.xml'
+          ).getroot()
+          expected = {
+              'initializesAndConfiguresBothVisualModes',
+              'appliesPresetsAndCustomColors',
+              'deliversLifecyclePayloadsAndUnregistersListeners',
+              'handlerReceivesBytesAndPublishesResult',
+              'handlerFailuresAndInvalidAudioBecomeErrorEvents',
+              'rejectsForgedSizesInvalidMetadataAndOversizedEncodedContent',
+              'publicConstructorsAndProgrammaticControlsRemainAvailable',
+          }
+          passed = {
+              case.attrib['name'] for case in report.findall('testcase')
+              if not any(case.find(tag) is not None for tag in ('failure', 'error', 'skipped'))
+          }
+          missing = expected - passed
+          if missing:
+              raise SystemExit(f'Existing tests missing or unsuccessful: {sorted(missing)}')
+          print(f'All {len(expected)} existing tests passed.')
+          PY
+
+      - name: Build Directory package
+        run: mvn --batch-mode --no-transfer-progress -Pdirectory verify
+
+      - name: Verify production JAR excludes demo classes
+        shell: bash
+        run: |
+          jar_path=target/audio-recorder-0.2.0.jar
+          test -s "$jar_path"
+          jar tf "$jar_path" > "$RUNNER_TEMP/audio-recorder-jar-entries.txt"
+          if grep -E '(^|/)(TestView|DemoAppShell)\.class$' "$RUNNER_TEMP/audio-recorder-jar-entries.txt"; then
+            echo 'Production JAR must not contain demo classes.' >&2
+            exit 1
+          fi
+
+      - name: Verify Java 25 bytecode
+        shell: bash
+        run: |
+          javap -verbose -classpath target/audio-recorder-0.2.0.jar \
+            org.vaadin.addons.audiorecorder.AudioRecorder > "$RUNNER_TEMP/audio-recorder-javap.txt"
+          cat "$RUNNER_TEMP/audio-recorder-javap.txt"
+          grep -Eq '^[[:space:]]*major version: 69[[:space:]]*$' "$RUNNER_TEMP/audio-recorder-javap.txt"
+
+      - name: Verify Directory ZIP was generated
+        shell: bash
+        run: |
+          test -s target/audio-recorder-0.2.0.zip
+          unzip -t target/audio-recorder-0.2.0.zip

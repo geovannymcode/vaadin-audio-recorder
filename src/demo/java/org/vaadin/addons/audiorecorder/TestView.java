@@ -12,7 +12,7 @@ import com.vaadin.flow.component.textfield.TextArea;
 import com.vaadin.flow.router.Route;
 
 /**
- * Demo view — run with {@code mvn jetty:run} → http://localhost:8080
+ * Demo view — run with {@code mvn -Pdemo jetty:run} → http://localhost:8080
  */
 @Route("")
 public class TestView extends VerticalLayout {
@@ -74,7 +74,7 @@ public class TestView extends VerticalLayout {
 
         add(recorder1, status1, transcription1);
         add(codeBlock("""
-            // Spring AI + OpenAI Whisper:
+            // Illustrative Spring AI adapter; check APIs for your chosen version:
             AudioRecorder recorder = new AudioRecorder(audio -> {
                 var options = OpenAiAudioTranscriptionOptions.builder()
                     .withLanguage("es")
